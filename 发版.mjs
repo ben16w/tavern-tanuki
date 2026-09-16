@@ -17,7 +17,7 @@ execSync(`node scripts/build-connector-json.mjs`, { cwd: root, stdio: 'inherit' 
 // 2) commit + push（没有变更就跳过 commit，只推指针）
 run('git add -A');
 try {
-  run(`git -c user.name=fannnnnnn5822 -c user.email=fannnnnnn5822@users.noreply.github.com commit -m "${msg.replace(/"/g, "'")}\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>"`);
+  run(`git -c user.name=fannnnnnn -c user.email=fannnnnnn5822@users.noreply.github.com commit -m "${msg.replace(/"/g, "'")}\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>"`);
   console.log('✅ committed:', msg);
 } catch {
   console.log('（没有新变更，跳过 commit）');
