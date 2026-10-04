@@ -22,7 +22,7 @@ try {
 } catch {
   console.log('No changes to commit.');
 }
-run('git push origin main');
+run('git push origin master');
 const hash = run('git rev-parse HEAD');
 console.log('Pushed. Latest commit:', hash);
 
