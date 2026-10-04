@@ -1,5 +1,5 @@
 /**
- * WebSocket bridge to the in-browser connector script (小狸连接器).
+ * WebSocket bridge to the in-browser Tavern Tanuki Connector script.
  *
  * The MCP server hosts a WS server on 127.0.0.1 (default port 6700). A small
  * Tavern-Helper script running inside SillyTavern connects out to it and
@@ -53,7 +53,7 @@ export class Bridge {
     if (!this.connected) {
       throw new Error(
         'Tavern connector is not connected. Make sure SillyTavern is open in a browser ' +
-        'and the 小狸连接器 script is enabled in Tavern-Helper (酒馆助手 → 脚本库).',
+        'and the Tavern Tanuki Connector script is enabled in Tavern Helper.',
       );
     }
     const id = this.nextId++;

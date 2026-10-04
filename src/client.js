@@ -1,13 +1,13 @@
 /**
  * SillyTavern HTTP API client.
  *
- * Handles Basic Auth, CSRF token acquisition and session cookies so that
- * every endpoint can be called with a single `post()` / `get()`.
+ * Handles Basic Auth, user-session login, CSRF token acquisition and session
+ * cookies so that every endpoint can be called with a single `post()` / `get()`.
  *
  * Configuration comes from the constructor or environment variables:
  *   ST_URL      (default: http://127.0.0.1:8000)
- *   ST_USER     (optional, HTTP Basic Auth user)
- *   ST_PASSWORD (optional, HTTP Basic Auth password)
+ *   ST_USER     (optional, SillyTavern user handle or HTTP Basic Auth user)
+ *   ST_PASSWORD (optional, SillyTavern user password or HTTP Basic Auth password)
  */
 export class STClient {
   constructor({ baseUrl, user, password } = {}) {
@@ -16,6 +16,7 @@ export class STClient {
     this.password = password ?? process.env.ST_PASSWORD ?? '';
     this.csrfToken = null;
     this.cookies = new Map();
+    this.userLoginAttempted = false;
   }
 
   #authHeader() {
@@ -39,10 +40,27 @@ export class STClient {
     }
   }
 
-  /** Fetch a CSRF token (and session cookie). Called lazily; retried on 403. */
+  async #login() {
+    if (!this.user || this.userLoginAttempted) return;
+    this.userLoginAttempted = true;
+
+    const res = await fetch(`${this.baseUrl}/api/users/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.#authHeader(),
+        ...this.#cookieHeader(),
+      },
+      body: JSON.stringify({ handle: this.user, password: this.password }),
+    });
+    this.#storeCookies(res);
+  }
+
+  /** Authenticate the user, then fetch a CSRF token. Called lazily; retried on 403. */
   async init() {
+    await this.#login();
     const res = await fetch(`${this.baseUrl}/csrf-token`, {
-      headers: { ...this.#authHeader() },
+      headers: { ...this.#authHeader(), ...this.#cookieHeader() },
     });
     this.#storeCookies(res);
     if (!res.ok) {
@@ -68,6 +86,7 @@ export class STClient {
     if (res.status === 403 && retry) {
       // Session/CSRF expired — refresh once and retry.
       this.csrfToken = null;
+      this.userLoginAttempted = false;
       return this.#request(method, path, body, false);
     }
     const text = await res.text();

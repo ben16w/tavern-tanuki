@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * tavern-tanuki 酒馆小狸 — MCP server for a running SillyTavern instance.
+ * Tavern Tanuki - MCP server for a running SillyTavern instance.
  *
  * Lets coding agents read and write characters, worldbooks and chats through
  * SillyTavern's HTTP API. Configure via environment variables:
@@ -323,16 +323,16 @@ tool(
 );
 
 /* ------------------------------------------------------------------ */
-/* Play — requires the 小狸连接器 Tavern-Helper script in the browser  */
+/* Play - requires the Tavern Tanuki Connector script in the browser */
 /* ------------------------------------------------------------------ */
 
 tool(
   'play_status',
-  'Check whether the in-browser tavern connector is online, and which character/chat is currently open. All play_* tools need the 小狸连接器 script running inside SillyTavern (酒馆助手 → 脚本库).',
+  'Check whether the in-browser connector is online and which character or chat is open. All play_* tools require the Tavern Tanuki Connector script running in SillyTavern.',
   {},
   async () => {
     if (!bridge.connected) {
-      return { connected: false, hint: 'Open SillyTavern in a browser with the 小狸连接器 script enabled.' };
+      return { connected: false, hint: 'Open SillyTavern in a browser with the Tavern Tanuki Connector script enabled.' };
     }
     const info = await bridge.call('status');
     return { connected: true, ...info };
@@ -382,7 +382,7 @@ tool(
 
 tool(
   'play_set_preset',
-  'Switch the active completion preset in the open tavern (like picking a different 预设 in the UI). Affects the next generation.',
+  'Switch the active completion preset in the open SillyTavern session. Affects the next generation.',
   {
     name: z.string().describe('Preset name from play_list_presets'),
   },
@@ -400,7 +400,7 @@ tool(
 
 tool(
   'play_get_prompt',
-  'X-ray the LAST prompt actually sent to the LLM (captured on every generation — including ones the user triggers manually in the browser). Verify worldbook entries fired, insertion order, tag structure. Default summary lists每条消息的 role/长度/前120字; search finds a substring (e.g. a worldbook entry\'s distinctive text) and returns matching positions with context; index returns one message\'s full content; mode:"full" dumps everything (token-heavy).',
+  'Inspect the last prompt sent to the LLM, including generations triggered manually in the browser. Use it to verify worldbook activation, insertion order, and tag structure. The default summary lists each message role, length, and first 120 characters; search finds matching text with context; index returns one message in full; mode:"full" returns the complete prompt and may use many tokens.',
   {
     mode: z.enum(['summary', 'full']).optional(),
     search: z.string().optional().describe('Substring to locate in the prompt, e.g. distinctive text from a worldbook entry'),

@@ -1,11 +1,11 @@
 // ============================================================
-// 小狸连接器 v0.3.0
-// 让 AI 编程助手（Claude Code 等）通过 tavern-tanuki MCP 服务器
-// 在酒馆里替你跑堂：代发消息、触发回复、切预设、切模型。
+// Tavern Tanuki Connector v0.3.0
+// Lets AI coding assistants (such as Claude Code) use the Tavern Tanuki MCP server
+// to send messages, trigger replies, and switch presets or models in SillyTavern.
 //
-// 用法：酒馆助手 → 脚本库 → 新建脚本，粘贴本文件内容并启用。
-// 要求：tavern-tanuki MCP 服务器在本机运行（它监听 127.0.0.1:6700）。
-// 注意：云酒馆(https)因浏览器混合内容限制连不上本机 ws，请用本地酒馆。
+// In Tavern Helper, create a script, paste this file's content, and enable it.
+// Tavern Tanuki must run locally and listen on 127.0.0.1:6700.
+// HTTPS-hosted SillyTavern cannot connect to a local WebSocket due to mixed-content restrictions.
 // ============================================================
 
 (() => {
@@ -16,7 +16,7 @@
   let announced = false;
   let busy = false;
 
-  // ---------- 工具函数 ----------
+  // ---------- Utilities ----------
 
   const lastId = () => getLastMessageId();
 
@@ -36,7 +36,7 @@
     return { total: end + 1, messages: out };
   }
 
-  /** 等待一次生成结束（含用户手动中止），返回最后一条消息 */
+  /** Wait for a generation to finish or stop, then return the final message. */
   function waitGeneration(timeoutMs) {
     return new Promise((resolve, reject) => {
       let done = false;
@@ -51,7 +51,7 @@
       };
       const onEnd = () => finish(true);
       const timer = setTimeout(
-        () => finish(false, new Error('生成超时（可能酒馆没在生成，或模型太慢）')),
+        () => finish(false, new Error('Generation timed out. SillyTavern may not be generating, or the model may be slow.')),
         timeoutMs,
       );
       eventOn(tavern_events.GENERATION_ENDED, onEnd);
@@ -59,9 +59,9 @@
     });
   }
 
-  // ---------- 提示词捕获（X光机） ----------
-  // 监听酒馆"提示词就绪"事件，抓下每次真正发给 LLM 的完整组装结果。
-  // dryRun（token 计数）跳过；聊天补全和文本补全两种模式都接。
+  // ---------- Prompt capture ----------
+  // Capture the fully assembled prompt when SillyTavern signals that it is ready for the LLM.
+  // Ignore dry runs used for token counting; support chat and text completion modes.
   let lastPrompt = null;
 
   eventOn(tavern_events.CHAT_COMPLETION_PROMPT_READY, (data) => {
@@ -72,7 +72,7 @@
         at: new Date().toISOString(),
         messages: JSON.parse(JSON.stringify(data.messages ?? [])),
       };
-    } catch (e) { console.warn('[小狸] 提示词捕获失败', e); }
+    } catch (e) { console.warn('[tanuki] Failed to capture prompt', e); }
   });
 
   eventOn(tavern_events.GENERATE_AFTER_COMBINE_PROMPTS, (data) => {
@@ -83,10 +83,10 @@
         at: new Date().toISOString(),
         messages: [{ role: 'combined', content: String(data.prompt ?? '') }],
       };
-    } catch (e) { console.warn('[小狸] 提示词捕获失败', e); }
+    } catch (e) { console.warn('[tanuki] Failed to capture prompt', e); }
   });
 
-  // ---------- 指令处理 ----------
+  // ---------- Command handling ----------
 
   const handlers = {
     async status() {
@@ -96,7 +96,7 @@
     },
 
     async send({ text, trigger = true }, timeoutMs) {
-      if (busy) throw new Error('上一条还在生成中');
+      if (busy) throw new Error('A previous response is still being generated.');
       busy = true;
       try {
         await createChatMessages([{ role: 'user', content: text }]);
@@ -110,7 +110,7 @@
     },
 
     async trigger(_args, timeoutMs) {
-      if (busy) throw new Error('上一条还在生成中');
+      if (busy) throw new Error('A previous response is still being generated.');
       busy = true;
       try {
         const wait = waitGeneration(timeoutMs - 2000);
@@ -143,7 +143,7 @@
 
     async prompt({ mode = 'summary', search, index }) {
       if (!lastPrompt) {
-        throw new Error('还没捕获到提示词——先生成一次（play_send，或你自己在酒馆里发一条消息）');
+        throw new Error('No prompt has been captured yet. Generate a response with play_send or directly in SillyTavern first.');
       }
       const { kind, at, messages } = lastPrompt;
       const total_chars = messages.reduce((s, m) => s + (m.content?.length ?? 0), 0);
@@ -151,7 +151,7 @@
 
       if (typeof index === 'number') {
         const m = messages[index];
-        if (!m) throw new Error(`没有第 ${index} 条消息（共 ${messages.length} 条）`);
+        if (!m) throw new Error(`Message ${index} does not exist; there are ${messages.length} messages.`);
         return { ...base, index, role: m.role, name: m.name, content: m.content };
       }
       if (search) {
@@ -180,7 +180,7 @@
     },
   };
 
-  // ---------- WebSocket 连接 ----------
+  // ---------- WebSocket connection ----------
 
   function connect() {
     try {
@@ -192,7 +192,7 @@
 
     ws.onopen = () => {
       if (!announced) {
-        toastr.success('已连接 AI 编程助手', '酒馆小狸');
+        toastr.success('Connected to the AI coding assistant', 'Tavern Tanuki');
         announced = true;
       }
       ws.send(JSON.stringify({ type: 'hello', agent: 'tanuki-connector', version: '0.3.0' }));
@@ -209,7 +209,7 @@
       const timeoutMs = msg.args?.__timeout_ms ?? 180000;
       try {
         const handler = handlers[msg.cmd];
-        if (!handler) throw new Error(`未知指令: ${msg.cmd}`);
+        if (!handler) throw new Error(`Unknown command: ${msg.cmd}`);
         const data = await handler(msg.args ?? {}, timeoutMs);
         ws.send(JSON.stringify({ id: msg.id, ok: true, data }));
       } catch (e) {
@@ -236,7 +236,7 @@
 
   connect();
 
-  // 页面卸载时自己收拾（防监听器/连接残留）
+  // Clean up on page unload to avoid leaving event listeners or connections behind.
   window.addEventListener('pagehide', () => {
     try { ws?.close(); } catch {}
     if (retry) clearTimeout(retry);
