@@ -21,7 +21,12 @@ test('logs in to a SillyTavern user account before calling protected endpoints',
     if (url.endsWith('/api/users/login')) {
       return response({ json: { handle: 'ben' }, cookies: ['session=authenticated; Path=/'] });
     }
-    if (url.endsWith('/csrf-token')) return response({ json: { token: 'csrf-token' } });
+    if (url.endsWith('/csrf-token')) {
+      return response({
+        json: { token: `csrf-token-${requests.length}` },
+        cookies: requests.length === 1 ? ['session=anonymous; Path=/'] : [],
+      });
+    }
     if (url.endsWith('/api/characters/all')) return response({ json: [] });
     throw new Error(`Unexpected request: ${url}`);
   };
@@ -33,11 +38,14 @@ test('logs in to a SillyTavern user account before calling protected endpoints',
     globalThis.fetch = originalFetch;
   }
 
-  assert.equal(requests.length, 3);
-  assert.deepEqual(JSON.parse(requests[0].options.body), { handle: 'ben', password: 'secret' });
-  assert.equal(requests[1].options.headers.Cookie, 'session=authenticated');
-  assert.equal(requests[2].options.headers['X-CSRF-Token'], 'csrf-token');
-  assert.equal(requests[2].options.headers.Cookie, 'session=authenticated');
+  assert.equal(requests.length, 4);
+  assert.match(requests[0].url, /\/csrf-token$/);
+  assert.deepEqual(JSON.parse(requests[1].options.body), { handle: 'ben', password: 'secret' });
+  assert.equal(requests[1].options.headers['X-CSRF-Token'], 'csrf-token-1');
+  assert.equal(requests[1].options.headers.Cookie, 'session=anonymous');
+  assert.match(requests[2].url, /\/csrf-token$/);
+  assert.equal(requests[3].options.headers['X-CSRF-Token'], 'csrf-token-3');
+  assert.equal(requests[3].options.headers.Cookie, 'session=authenticated');
 });
 
 test('continues with Basic Auth when no SillyTavern user is configured', async () => {

@@ -40,25 +40,7 @@ export class STClient {
     }
   }
 
-  async #login() {
-    if (!this.user || this.userLoginAttempted) return;
-    this.userLoginAttempted = true;
-
-    const res = await fetch(`${this.baseUrl}/api/users/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...this.#authHeader(),
-        ...this.#cookieHeader(),
-      },
-      body: JSON.stringify({ handle: this.user, password: this.password }),
-    });
-    this.#storeCookies(res);
-  }
-
-  /** Authenticate the user, then fetch a CSRF token. Called lazily; retried on 403. */
-  async init() {
-    await this.#login();
+  async #fetchCsrfToken() {
     const res = await fetch(`${this.baseUrl}/csrf-token`, {
       headers: { ...this.#authHeader(), ...this.#cookieHeader() },
     });
@@ -68,6 +50,32 @@ export class STClient {
     }
     const data = await res.json();
     this.csrfToken = data.token;
+  }
+
+  async #login() {
+    if (!this.user || this.userLoginAttempted) return;
+    this.userLoginAttempted = true;
+
+    const res = await fetch(`${this.baseUrl}/api/users/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': this.csrfToken,
+        ...this.#authHeader(),
+        ...this.#cookieHeader(),
+      },
+      body: JSON.stringify({ handle: this.user, password: this.password }),
+    });
+    this.#storeCookies(res);
+  }
+
+  /** Establish a session, authenticate the user, then refresh the CSRF token. */
+  async init() {
+    await this.#fetchCsrfToken();
+    await this.#login();
+    if (this.user && this.cookies.size > 0) {
+      await this.#fetchCsrfToken();
+    }
   }
 
   async #request(method, path, body, retry = true) {
