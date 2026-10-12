@@ -24,12 +24,46 @@ function tool(name, description, inputSchema, handler) {
   server.registerTool(name, { description, inputSchema }, async (args) => {
     try {
       const result = await handler(args ?? {});
-      const text = typeof result === 'string' ? result : JSON.stringify(result, null, 1);
+      const text = typeof result === 'string' ? result : JSON.stringify(result);
       return { content: [{ type: 'text', text }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   });
+}
+
+const pageSchema = {
+  offset: z.number().int().min(0).optional().describe('Result offset (default 0)'),
+  limit: z.number().int().min(1).max(100).optional().describe('Maximum results (default 20, max 100)'),
+  include_total: z.boolean().optional().describe('Include total matching items (default false)'),
+};
+
+const presetPageSchema = {
+  offset: pageSchema.offset,
+  limit: pageSchema.limit,
+};
+
+function page(items, offset = 0, limit = 20, includeTotal = false) {
+  const results = items.slice(offset, offset + limit);
+  return {
+    ...(includeTotal ? { total: items.length } : {}),
+    offset,
+    returned: results.length,
+    next_offset: offset + results.length < items.length ? offset + results.length : undefined,
+    results,
+  };
+}
+
+function clippedText(value, maxChars, offset = 0) {
+  const text = String(value ?? '');
+  const nextOffset = offset + maxChars < text.length ? offset + maxChars : undefined;
+  return {
+    text: text.slice(offset, offset + maxChars),
+    length: text.length,
+    offset,
+    next_offset: nextOffset,
+    truncated: offset > 0 || nextOffset !== undefined || undefined,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -38,7 +72,7 @@ function tool(name, description, inputSchema, handler) {
 
 tool(
   'st_status',
-  'Check the SillyTavern connection. Returns version, character count and worldbook count.',
+  'Check the SillyTavern connection and item counts.',
   {},
   async () => {
     const version = await st.get('/version');
@@ -58,11 +92,12 @@ tool(
 
 tool(
   'list_characters',
-  'List characters (name, avatar filename, tags, chat count/date). Use `filter` to search by name substring. Avatar filename is the ID used by all other character tools.',
+  'List character summaries; use avatar with other character tools.',
   {
     filter: z.string().optional().describe('Case-insensitive substring to match against character name'),
+    ...pageSchema,
   },
-  async ({ filter }) => {
+  async ({ filter, offset, limit, include_total }) => {
     const all = await st.post('/api/characters/all');
     let list = all.map((c) => ({
       name: c.name,
@@ -77,20 +112,20 @@ tool(
       const f = filter.toLowerCase();
       list = list.filter((c) => c.name.toLowerCase().includes(f) || c.avatar.toLowerCase().includes(f));
     }
-    return { count: list.length, characters: list };
+    return { characters: page(list, offset, limit, include_total) };
   },
 );
 
-const CHARACTER_DEFAULT_FIELDS = [
+const CHARACTER_PROMPT_FIELDS = [
   'name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example',
 ];
 
 tool(
   'get_character',
-  `Read a character card. By default returns ${CHARACTER_DEFAULT_FIELDS.join('/')} plus creator notes, alternate greeting count and embedded-worldbook name. Pass \`fields\` to select specific top-level or data.* fields (e.g. ["data.alternate_greetings", "data.extensions"]).`,
+  'Read compact character metadata; use fields for full card values.',
   {
-    avatar_url: z.string().describe('Avatar filename from list_characters, e.g. "MyChar.png"'),
-    fields: z.array(z.string()).optional().describe('Specific fields to return instead of the default set'),
+    avatar_url: z.string().describe('Avatar filename from list_characters'),
+    fields: z.array(z.string()).max(12).optional().describe('Full top-level or data.* values, e.g. description or data.creator_notes'),
   },
   async ({ avatar_url, fields }) => {
     const c = await st.post('/api/characters/get', { avatar_url });
@@ -104,23 +139,28 @@ tool(
       }
       return pick;
     }
-    const out = {};
-    for (const f of CHARACTER_DEFAULT_FIELDS) out[f] = c[f];
-    out.creator_notes = c.data?.creator_notes || undefined;
-    out.character_version = c.data?.character_version || undefined;
-    out.alternate_greetings_count = c.data?.alternate_greetings?.length ?? 0;
-    out.embedded_worldbook = c.data?.character_book?.name;
-    out.extensions_keys = c.data?.extensions ? Object.keys(c.data.extensions) : undefined;
-    return out;
+    return {
+      name: c.name,
+      avatar: c.avatar,
+      tags: c.tags?.length ? c.tags : undefined,
+      prompt_lengths: Object.fromEntries(
+        CHARACTER_PROMPT_FIELDS.map((field) => [field, String(c[field] ?? '').length]),
+      ),
+      creator_notes_length: String(c.data?.creator_notes ?? '').length,
+      character_version: c.data?.character_version || undefined,
+      alternate_greetings_count: c.data?.alternate_greetings?.length ?? 0,
+      embedded_worldbook: c.data?.character_book?.name,
+      extensions_keys: c.data?.extensions ? Object.keys(c.data.extensions) : undefined,
+    };
   },
 );
 
 tool(
   'edit_character',
-  'Set one prompt field of a character card (description, personality, scenario, first_mes, mes_example...). SillyTavern stores these fields twice (top level + data.*); this tool updates both copies in sync. For nested data (creator_notes, alternate_greetings, extensions, tags) use merge_character_data instead.',
+  'Set a prompt field and synchronize its top-level and data.* copies.',
   {
     avatar_url: z.string().describe('Avatar filename, e.g. "MyChar.png"'),
-    field: z.string().describe('Field name, e.g. "description" or "first_mes"'),
+    field: z.string().describe('Field name, e.g. description or first_mes'),
     value: z.string().describe('New value for the field'),
   },
   async ({ avatar_url, field, value }) => {
@@ -137,7 +177,7 @@ tool(
 
 tool(
   'merge_character_data',
-  'Deep-merge a partial card object into a character. Use for nested fields, e.g. {"data": {"creator_notes": "...", "character_version": "1.1"}} or {"tags": [...]}. NOTE: prompt fields (description etc.) exist BOTH at top level and under data.* — when merging those, include both copies, or prefer edit_character which syncs them automatically.',
+  'Deep-merge nested character data or tags; use edit_character for prompt fields.',
   {
     avatar_url: z.string().describe('Avatar filename, e.g. "MyChar.png"'),
     edits: z.record(z.any()).describe('Partial card object to deep-merge into the character'),
@@ -154,18 +194,19 @@ tool(
 
 tool(
   'list_worldbooks',
-  'List worldbook (lorebook) names. Use `filter` to search; large installs can have hundreds of books.',
+  'List worldbook names.',
   {
     filter: z.string().optional().describe('Case-insensitive substring filter'),
+    ...pageSchema,
   },
-  async ({ filter }) => {
+  async ({ filter, offset, limit, include_total }) => {
     const settings = await st.post('/api/settings/get');
     let names = settings.world_names ?? [];
     if (filter) {
       const f = filter.toLowerCase();
       names = names.filter((n) => n.toLowerCase().includes(f));
     }
-    return { count: names.length, names };
+    return { worldbooks: page(names, offset, limit, include_total) };
   },
 );
 
@@ -180,22 +221,53 @@ const entrySummary = (e) => ({
   content_length: e.content?.length ?? 0,
 });
 
+function entryWithContent(e, maxContentChars, contentOffset) {
+  const content = clippedText(e.content, maxContentChars, contentOffset);
+  return {
+    ...e,
+    content: content.text,
+    content_length: content.length,
+    content_offset: content.offset,
+    content_next_offset: content.next_offset,
+    content_truncated: content.truncated,
+  };
+}
+
 tool(
   'get_worldbook',
-  'Read a worldbook. mode "summary" (default) lists entries without content; mode "full" includes entry content; pass `uids` to fetch full content of specific entries only.',
+  'Read paged worldbook entries; summary mode omits content.',
   {
     name: z.string().describe('Worldbook name from list_worldbooks'),
-    mode: z.enum(['summary', 'full']).optional(),
-    uids: z.array(z.number()).optional().describe('Return only these entries (always with full content)'),
+    mode: z.enum(['summary', 'full']).optional().describe('summary omits content (default); full includes it'),
+    uids: z.array(z.number()).max(20).optional().describe('Specific entry ids; returns entries with content'),
+    content_offset: z.number().int().min(0).optional().describe('Content character offset for the next chunk (default 0)'),
+    max_content_chars: z.number().int().min(100).max(16_000).optional().describe('Maximum content characters per entry (default 4,000)'),
+    ...pageSchema,
   },
-  async ({ name, mode = 'summary', uids }) => {
+  async ({
+    name, mode = 'summary', uids, offset, limit, include_total,
+    content_offset = 0, max_content_chars = 4_000,
+  }) => {
     const wb = await st.post('/api/worldinfo/get', { name });
-    const entries = Object.values(wb.entries ?? {});
+    const entries = Object.values(wb.entries ?? {}).sort((a, b) => a.uid - b.uid);
     if (uids?.length) {
-      return { name, entries: entries.filter((e) => uids.includes(e.uid)) };
+      return {
+        name,
+        entries: entries
+          .filter((e) => uids.includes(e.uid))
+          .map((e) => entryWithContent(e, max_content_chars, content_offset)),
+      };
     }
-    if (mode === 'full') return { name, entries };
-    return { name, entry_count: entries.length, entries: entries.map(entrySummary) };
+    const selected = page(entries, offset, limit, include_total);
+    return {
+      name,
+      entries: {
+        ...selected,
+        results: mode === 'full'
+          ? selected.results.map((e) => entryWithContent(e, max_content_chars, content_offset))
+          : selected.results.map(entrySummary),
+      },
+    };
   },
 );
 
@@ -213,11 +285,21 @@ const NEW_ENTRY_DEFAULTS = {
 
 tool(
   'upsert_worldbook_entry',
-  'Create or update a worldbook entry. If `uid` is omitted (or not found), a new entry is created. `entry` holds the fields to set: key (array of trigger words), content, comment, constant (blue light), disable, position, order, probability, etc. Creates the worldbook if it does not exist.',
+  'Create or update an entry; omit uid to create, including a missing worldbook.',
   {
     name: z.string().describe('Worldbook name'),
     uid: z.number().optional().describe('Entry uid to update; omit to create a new entry'),
-    entry: z.record(z.any()).describe('Entry fields to set/merge'),
+    entry: z.object({
+      key: z.array(z.string()).optional(),
+      keysecondary: z.array(z.string()).optional(),
+      content: z.string().optional(),
+      comment: z.string().optional(),
+      constant: z.boolean().optional(),
+      disable: z.boolean().optional(),
+      position: z.number().optional(),
+      order: z.number().optional(),
+      probability: z.number().min(0).max(100).optional(),
+    }).passthrough().describe('Entry fields to merge; common fields are typed and other ST fields are allowed'),
   },
   async ({ name, uid, entry }) => {
     let wb;
@@ -243,7 +325,7 @@ tool(
 
 tool(
   'delete_worldbook_entry',
-  'Delete a single entry from a worldbook by uid.',
+  'Delete a worldbook entry by uid.',
   {
     name: z.string().describe('Worldbook name'),
     uid: z.number().describe('Entry uid to delete'),
@@ -260,7 +342,7 @@ tool(
 
 tool(
   'delete_worldbook',
-  'Delete an ENTIRE worldbook file. Destructive — requires confirm:true.',
+  'Delete a worldbook; requires confirm: true.',
   {
     name: z.string().describe('Worldbook name'),
     confirm: z.boolean().describe('Must be true to actually delete'),
@@ -278,46 +360,64 @@ tool(
 
 tool(
   'list_chats',
-  'List chat files of a character (file id, message count, size). Pass the file id to get_chat to read messages.',
+  'List chat file summaries for a character.',
   {
-    avatar_url: z.string().describe('Avatar filename, e.g. "MyChar.png"'),
+    avatar_url: z.string().describe('Avatar filename from list_characters'),
+    ...pageSchema,
   },
-  async ({ avatar_url }) => {
+  async ({ avatar_url, offset, limit, include_total }) => {
     const chats = await st.post('/api/characters/chats', { avatar_url });
     if (chats.error) throw new Error('No chats found for this character.');
-    return Object.values(chats).map((c) => ({
+    const summaries = Object.values(chats).map((c) => ({
       file_id: c.file_id,
       chat_items: c.chat_items,
       file_size: c.file_size,
     }));
+    return { chats: page(summaries, offset, limit, include_total) };
   },
 );
 
 tool(
   'get_chat',
-  'Read messages from a chat file. Returns the last `last` messages (default 10) with name/is_user/send_date/mes.',
+  'Read trailing chat messages with bounded message text.',
   {
-    avatar_url: z.string().describe('Avatar filename, e.g. "MyChar.png"'),
-    file_id: z.string().describe('Chat file id from list_chats (with or without .jsonl)'),
-    last: z.number().optional().describe('How many trailing messages to return (default 10)'),
+    avatar_url: z.string().describe('Avatar filename from list_characters'),
+    file_id: z.string().describe('Chat file id from list_chats'),
+    last: z.number().int().min(1).max(50).optional().describe('Trailing messages (default 10, max 50)'),
+    message_offset: z.number().int().min(0).optional().describe('Message index from the start; overrides trailing selection'),
+    text_offset: z.number().int().min(0).optional().describe('Message-text character offset for the next chunk (default 0)'),
+    max_chars: z.number().int().min(100).max(4_000).optional().describe('Maximum characters per message (default 2,000)'),
   },
-  async ({ avatar_url, file_id, last = 10 }) => {
+  async ({ avatar_url, file_id, last = 10, message_offset, text_offset = 0, max_chars = 2_000 }) => {
     const ch_name = avatar_url.replace(/\.png$/i, '');
     const file_name = file_id.replace(/\.jsonl$/i, '');
     const data = await st.post('/api/chats/get', { ch_name, file_name, avatar_url });
     const [meta, ...messages] = data;
-    const slice = messages.slice(-last);
+    const start = message_offset === undefined
+      ? Math.max(messages.length - last, 0)
+      : message_offset;
+    const slice = messages.slice(start, start + last);
     return {
       total_messages: messages.length,
+      message_offset: start,
+      next_message_offset: start + slice.length < messages.length ? start + slice.length : undefined,
       returned: slice.length,
       user_name: meta?.user_name,
       character_name: meta?.character_name,
-      messages: slice.map((m) => ({
-        name: m.name,
-        is_user: m.is_user,
-        send_date: m.send_date,
-        mes: m.mes,
-      })),
+      messages: slice.map((m, index) => {
+        const mes = clippedText(m.mes, max_chars, text_offset);
+        return {
+          index: start + index,
+          name: m.name,
+          is_user: m.is_user,
+          send_date: m.send_date,
+          mes: mes.text,
+          mes_length: mes.length,
+          mes_offset: mes.offset,
+          mes_next_offset: mes.next_offset,
+          mes_truncated: mes.truncated,
+        };
+      }),
     };
   },
 );
@@ -328,7 +428,7 @@ tool(
 
 tool(
   'play_status',
-  'Check whether the in-browser connector is online and which character or chat is open. All play_* tools require the Tavern Tanuki Connector script running in SillyTavern.',
+  'Check the required browser connector and open chat.',
   {},
   async () => {
     if (!bridge.connected) {
@@ -341,7 +441,7 @@ tool(
 
 tool(
   'play_send',
-  'Play the currently open chat as the user: sends `text` as a user message, triggers the AI reply (full prompt assembly — preset, worldbook, regex all apply) and returns the reply. Set trigger:false to only add the message without generating.',
+  'Send a user message to the open chat; generation is on by default.',
   {
     text: z.string().describe('Message to send as the user'),
     trigger: z.boolean().optional().describe('Trigger an AI reply and wait for it (default true)'),
@@ -354,7 +454,7 @@ tool(
 
 tool(
   'play_trigger',
-  'Trigger an AI reply in the currently open chat without adding a user message (e.g. to let the character continue), and return the reply.',
+  'Generate a reply in the open chat without sending a message.',
   {
     timeout_s: z.number().optional().describe('Max seconds to wait (default 180)'),
   },
@@ -363,26 +463,26 @@ tool(
 
 tool(
   'play_recent_messages',
-  'Read the last N messages of the CURRENTLY OPEN chat (live, via the browser). For closed/other chats use get_chat instead.',
+  'Read recent messages from the currently open chat.',
   {
-    n: z.number().optional().describe('How many messages (default 4)'),
+    n: z.number().int().min(1).max(20).optional().describe('Messages to return (default 4, max 20)'),
   },
   async ({ n = 4 }) => bridge.call('last_messages', { n }),
 );
 
 tool(
   'play_list_presets',
-  'List available completion preset names (current API mode). Use play_set_preset to switch.',
-  {},
-  async () => {
+  'List available completion preset names.',
+  presetPageSchema,
+  async ({ offset, limit }) => {
     const settings = await st.post('/api/settings/get');
-    return { openai_presets: settings.openai_setting_names ?? [] };
+    return { presets: page(settings.openai_setting_names ?? [], offset, limit, true) };
   },
 );
 
 tool(
   'play_set_preset',
-  'Switch the active completion preset in the open SillyTavern session. Affects the next generation.',
+  'Set the completion preset for the open session.',
   {
     name: z.string().describe('Preset name from play_list_presets'),
   },
@@ -391,7 +491,7 @@ tool(
 
 tool(
   'play_set_model',
-  'Switch the model within the currently selected API backend (STScript /model). Pass the model id/name as shown in the ST model dropdown.',
+  'Set the model for the selected API backend.',
   {
     name: z.string().describe('Model name/id'),
   },
@@ -400,18 +500,18 @@ tool(
 
 tool(
   'play_get_prompt',
-  'Inspect the last prompt sent to the LLM, including generations triggered manually in the browser. Use it to verify worldbook activation, insertion order, and tag structure. The default summary lists each message role, length, and first 120 characters; search finds matching text with context; index returns one message in full; mode:"full" returns the complete prompt and may use many tokens.',
+  'Inspect the latest assembled prompt; summary is the default and full can be large.',
   {
-    mode: z.enum(['summary', 'full']).optional(),
-    search: z.string().optional().describe('Substring to locate in the prompt, e.g. distinctive text from a worldbook entry'),
-    index: z.number().optional().describe('Return full content of this message index'),
+    mode: z.enum(['summary', 'full']).optional().describe('summary gives roles and excerpts; full returns the complete prompt'),
+    search: z.string().optional().describe('Search prompt text and return matching context'),
+    index: z.number().optional().describe('Return one prompt message in full by index'),
   },
   async ({ mode, search, index }) => bridge.call('prompt', { mode, search, index }, 30_000),
 );
 
 tool(
   'play_stscript',
-  'Run a raw /STScript command in the open tavern and return its pipe result. Escape hatch for anything the other play tools do not cover (e.g. "/swipes-count", "/api"). The agent has the same power as a user typing into the ST input box — be careful with destructive commands.',
+  'Run a raw STScript command in the open tavern; use only when no focused tool fits.',
   {
     script: z.string().describe('STScript command, e.g. "/preset | /echo {{pipe}}"'),
   },

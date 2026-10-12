@@ -17,6 +17,8 @@ The management tools work without the connector. The connector is required only 
 
 **Play:** `play_status`, `play_send`, `play_trigger`, `play_recent_messages`, `play_get_prompt`, `play_list_presets`, `play_set_preset`, `play_set_model`, and `play_stscript`.
 
+Read tools return compact, bounded responses by default. Lists accept `offset` and `limit` (default 20), with `include_total: true` when the matching count is needed. `get_character` returns metadata unless specific `fields` are requested. `get_worldbook` and `get_chat` return text in bounded chunks and include continuation offsets when more content is available.
+
 ## Installation
 
 Requires Node.js 18 or later and a running SillyTavern instance. The default endpoint is `http://127.0.0.1:8000`.
